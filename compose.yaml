@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: 'postgres:17-alpine'
+    environment:
+      - 'POSTGRES_DB=fieldsync'
+      - 'POSTGRES_USER=fieldsync'
+      - 'POSTGRES_PASSWORD=fieldsync'
+    ports:
+      - '5432'
