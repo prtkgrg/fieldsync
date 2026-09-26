@@ -1,11 +1,13 @@
 # FieldSync
 
-An offline-first sync engine for field data collection, built with Java 21, Spring Boot 4 and PostgreSQL.
+An offline-first sync engine for field data collection: a Java 21 / Spring Boot 4 / PostgreSQL
+server and a Flutter client that works with no network at all.
 
 [![CI](https://github.com/prtkgrg/fieldsync/actions/workflows/ci.yml/badge.svg)](https://github.com/prtkgrg/fieldsync/actions/workflows/ci.yml)
 ![Java 21](https://img.shields.io/badge/Java-21-orange?logo=openjdk)
 ![Spring Boot 4](https://img.shields.io/badge/Spring_Boot-4.1-6DB33F?logo=springboot&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-336791?logo=postgresql&logoColor=white)
+![Flutter](https://img.shields.io/badge/Flutter-3.47-02569B?logo=flutter&logoColor=white)
 
 Field workers collect data on phones that are offline for hours or days. When they reconnect,
 their changes have to reach the server and every other device without losing anyone's work. That
@@ -15,6 +17,14 @@ a record was deleted in the meantime.
 I led this kind of system at national scale on [MEDplat](https://prateekgarg.dev), where it served
 300 million people across 12 deployments. FieldSync is a small, public version of the same problem,
 built to show the design.
+
+<p align="center">
+  <img src="docs/offline.png" width="32%" alt="Offline: two changes waiting to sync">
+  &nbsp;
+  <img src="docs/conflict.png" width="32%" alt="After reconnecting: synced, one conflict reported">
+</p>
+<p align="center"><sub>Left: offline, with edits saved locally and queued. Right: after reconnecting, with changes pushed, another
+device's edits pulled in, and the one field both devices changed reported.</sub></p>
 
 ## How it works
 
@@ -110,6 +120,39 @@ need no migrations, much like the configuration-driven approach I used on MEDpla
 - **Not included:** authentication, per-user data scoping and tombstone compaction. A real
   deployment needs all three.
 
+## The Flutter client
+
+[`app/`](app) is a small Android app for household visits, built with Flutter, Bloc, GetIt and
+SQLite.
+
+**Local first.** Every save writes to SQLite and queues a mutation in an **outbox** in the same
+transaction, so the UI never waits for the network. The status bar shows how many changes are
+waiting and when the last sync succeeded. Being offline is a normal state, not an error screen.
+
+**Sync is push then pull.** The
+[`SyncEngine`](app/lib/sync/sync_engine.dart) sends the outbox, then pulls until caught up. It
+runs on demand and every 30 seconds while the app is open.
+
+**Decisions that made it correct:**
+- **One mutation per record per request.** The server judges each change against the device's
+  `baseVersion`. Two queued edits to the same record in one request would make the second look
+  like a conflict with the first. Unsent edits are merged into one outbox row, and each push round
+  takes only the oldest change per record.
+- **Base versions are read at send time,** not when the edit is queued, so a later edit builds on
+  this device's own previous write.
+- **Rebase on pull.** Edits made while a sync is running are re-applied on top of the incoming
+  server copy, so nothing typed on the device is lost.
+- **Only send what changed.** The edit form sends only the fields the user touched. An early
+  version sent every field. During the live test that turned another device's real `notes` edit
+  into a false conflict, and a widget test now covers it.
+- **Safe to interrupt.** A failed push puts the batch back with the same mutation IDs, so a push
+  that actually reached the server isn't applied twice. The pull cursor advances only in the same
+  transaction that applies each page.
+
+Tested with an in-memory SQLite database and a fake server: 10 sync-engine tests cover queueing,
+merging edits, resending after failure, paging through 1,000+ records, rebase, delete-wins and
+conflict logging. There are also 2 widget tests for the form.
+
 ## Run it
 
 Requires Java 21 and Docker.
@@ -124,15 +167,28 @@ The API is at http://localhost:8080 and the docs at http://localhost:8080/swagge
 ./mvnw verify              # unit tests + Testcontainers integration tests
 ```
 
+Then run the app on an Android emulator. It reaches the host machine at `10.0.2.2:8080`.
+
+```bash
+cd app
+flutter run                # or: flutter run --dart-define=SERVER_URL=http://<your-ip>:8080
+flutter test
+```
+
 ## Tech
 
-Java 21 · Spring Boot 4.1 (Web MVC, JDBC, Validation, Actuator) · PostgreSQL 17 with JSONB ·
-Flyway · Testcontainers · JUnit 5 and AssertJ · springdoc OpenAPI · Docker Compose ·
-GitHub Actions
+**Server:** Java 21 · Spring Boot 4.1 (Web MVC, JDBC, Validation, Actuator) · PostgreSQL 17 with
+JSONB · Flyway · Testcontainers · JUnit 5 and AssertJ · springdoc OpenAPI · Docker Compose
+
+**Client:** Flutter · Dart · flutter_bloc · GetIt · sqflite · http
+
+**CI:** GitHub Actions runs both test suites on every push.
 
 ## Roadmap
 
-- [ ] Flutter client with a local SQLite store and a background sync queue
+- [x] Flutter client with a local SQLite store and an outbox
+- [ ] Background sync when the app is closed (WorkManager)
+- [ ] A conflicts screen, so users can review what the server kept
 - [ ] Authentication and per-user data scoping
 - [ ] Tombstone compaction
 
